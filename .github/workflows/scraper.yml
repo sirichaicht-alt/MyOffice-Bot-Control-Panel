@@ -1,0 +1,35 @@
+name: MyOffice Scraper Bot
+
+on:
+  schedule:
+    # ทำงานทุกๆ 15 นาที (ใช้เวลาแบบ UTC - ถ้าต้องการทุก 15 นาทีใช้แบบนี้ได้เลย)
+    - cron: '*/15 * * * *' 
+  workflow_dispatch: # ปุ่มสำหรับให้แอดมินกดสั่งรันด้วยตัวเองแบบ Manual
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright Browsers
+        run: npx playwright install chromium --with-deps
+
+      - name: Run Scraper Script
+        env:
+          LOGIN_URL: ${{ secrets.LOGIN_URL }}
+          INBOX_URL: ${{ secrets.INBOX_URL }}
+          MYOFFICE_USERNAME: ${{ secrets.MYOFFICE_USERNAME }}
+          MYOFFICE_PASSWORD: ${{ secrets.MYOFFICE_PASSWORD }}
+          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+          LINE_GROUP: ${{ secrets.LINE_GROUP }}
+        run: npx tsx scripts/github-scraper.ts
