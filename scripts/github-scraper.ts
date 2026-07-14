@@ -160,10 +160,15 @@ async function executeScraper() {
   }
 }
 
-executeScraper().then(() => {
-  console.log('Done.');
-  process.exit(0);
-}).catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+export { executeScraper };
+
+// สั่งรันอัตโนมัติเฉพาะตอนที่รันไฟล์นี้ตรงๆ (ตรวจสอบสำหรับ ES module)
+if (import.meta.url.startsWith('file:') && process.argv[1] && import.meta.url.includes(process.argv[1].split('/').pop()!)) {
+  executeScraper().then(() => {
+    console.log('Done.');
+    process.exit(0);
+  }).catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+}
