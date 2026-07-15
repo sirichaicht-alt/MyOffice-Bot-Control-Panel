@@ -17,26 +17,38 @@ const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 
 async function sendLineNotification(docId: string, title: string, sender: string, loginUrl: string, token: string, groupId: string) {
-  const url = "https://api.line.me/v2/bot/message/push";
+  // รองรับการใส่ Group ID หลายกลุ่มโดยคั่นด้วยลูกน้ำ (,)
+  const groupIds = groupId.split(',').map(id => id.trim()).filter(id => id.length > 0);
+  
   const message = `แจ้งเตือนหนังสือใหม่!\nเลขที่: ${docId}\nเรื่อง: ${title}\nจาก: ${sender}\n\nกรุณาตรวจสอบในระบบ MyOffice\n${loginUrl}`;
 
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        to: groupId,
-        messages: [{ type: 'text', text: message }]
-      })
-    });
-    return response.ok;
-  } catch (error) {
-    console.error('Error sending LINE notification:', error);
-    return false;
+  let allSuccess = true;
+
+  // วนลูปส่งทีละกลุ่ม (หรือจะใช้ multicast API ของ LINE ก็ได้ แต่เพื่อความชัวร์ส่งทีละอัน)
+  for (const targetId of groupIds) {
+    try {
+      const response = await fetch("https://api.line.me/v2/bot/message/push", {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          to: targetId,
+          messages: [{ type: 'text', text: message }]
+        })
+      });
+      if (!response.ok) {
+        console.error(`Failed to send to ${targetId}: ${response.statusText}`);
+        allSuccess = false;
+      }
+    } catch (error) {
+      console.error(`Error sending LINE notification to ${targetId}:`, error);
+      allSuccess = false;
+    }
   }
+
+  return allSuccess;
 }
 
 async function executeScraper() {
@@ -95,55 +107,60 @@ async function executeScraper() {
       ]);
     }
 
-    console.log(`Navigating to Inbox: ${inboxUrl}`);
-    await page.goto(inboxUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    const inboxUrls = inboxUrl.split(',').map(u => u.trim()).filter(u => u.length > 0);
 
-    console.log('Extracting data from table...');
+    for (const url of inboxUrls) {
+      console.log(`Navigating to Inbox: ${url}`);
+      await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
 
-    const tableData = await page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll('table tbody tr'));
-      return rows.map(row => {
-        const cells = Array.from(row.querySelectorAll('td')).map(td => td.innerText.trim());
-        return cells;
-      }).filter(cells => cells.length >= 5);
-    });
+      console.log(`Extracting data from table at ${url}...`);
 
-    console.log(`Found ${tableData.length} valid rows in the table.`);
+      const tableData = await page.evaluate(() => {
+        const rows = Array.from(document.querySelectorAll('table tbody tr'));
+        return rows.map(row => {
+          const cells = Array.from(row.querySelectorAll('td')).map(td => td.innerText.trim());
+          return cells;
+        }).filter(cells => cells.length >= 5);
+      });
 
-    for (let i = 0; i < tableData.length; i++) {
-      const row = tableData[i];
-      const docId = row[1];
-      const title = row[2];
-      let senderRaw = row[4];
-      let sender = senderRaw.includes('โทร') ? senderRaw.split('โทร')[0].trim() : senderRaw;
+      console.log(`Found ${tableData.length} valid rows in the table at ${url}.`);
 
-      if (!docId || docId === '' || docId.toLowerCase().includes('เลขหนังสือ') || docId.toLowerCase().includes('เลขที่')) {
-        continue; 
-      }
+      for (let i = 0; i < tableData.length; i++) {
+        const row = tableData[i];
+        const docId = row[1];
+        const title = row[2];
+        let senderRaw = row[4];
+        let sender = senderRaw.includes('โทร') ? senderRaw.split('โทร')[0].trim() : senderRaw;
 
-      try {
-        const q = query(collection(db, "processed_documents"), where("docId", "==", docId));
-        const querySnapshot = await getDocs(q);
-
-        if (querySnapshot.empty) {
-          console.log(`New document detected! ID: ${docId}. Sending LINE notification...`);
-          const success = await sendLineNotification(docId, title, sender, loginUrl, lineToken, lineGroup);
-          if (success) {
-            await addDoc(collection(db, "processed_documents"), {
-              docId,
-              title,
-              sender,
-              timestamp: new Date().toISOString()
-            });
-            console.log(`Successfully sent notification for ${docId}`);
-          } else {
-            console.log(`Failed to send notification for ${docId}`);
-          }
-        } else {
-          // Already processed
+        if (!docId || docId === '' || docId.toLowerCase().includes('เลขหนังสือ') || docId.toLowerCase().includes('เลขที่')) {
+          continue; 
         }
-      } catch (err: any) {
-        console.log(`ERROR processing document ${docId}: ${err.message || err}`);
+
+        try {
+          const q = query(collection(db, "processed_documents"), where("docId", "==", docId));
+          const querySnapshot = await getDocs(q);
+
+          if (querySnapshot.empty) {
+            console.log(`New document detected! ID: ${docId}. Sending LINE notification...`);
+            const success = await sendLineNotification(docId, title, sender, loginUrl, lineToken, lineGroup);
+            if (success) {
+              await addDoc(collection(db, "processed_documents"), {
+                docId,
+                title,
+                sender,
+                url: url,
+                timestamp: new Date().toISOString()
+              });
+              console.log(`Successfully sent notification for ${docId}`);
+            } else {
+              console.log(`Failed to send notification for ${docId}`);
+            }
+          } else {
+            // Already processed
+          }
+        } catch (err: any) {
+          console.log(`ERROR processing document ${docId}: ${err.message || err}`);
+        }
       }
     }
 
